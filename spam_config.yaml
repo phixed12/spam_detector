@@ -2,28 +2,38 @@
 
 high_risk_industries:
   - locksmith
-  - restoration
-  - plumber
   - towing
+  - roadside assistance
+  - plumber
+  - plumbing
   - hvac
+  - air conditioning
+  - heating
   - garage door
   - pest control
+  - exterminator
   - electrician
   - water damage
+  - water damage restoration
   - fire damage
+  - fire damage restoration
   - mold
-  - roadside assistance
+  - mold remediation
+  - restoration
   - emergency ac
   - emergency plumbing
+  - appliance repair
+  - roofing
+  - roofer
 
 shared_address_threshold: 3
 shared_phone_threshold: 2
 batch_submission_threshold: 5
 
 score_thresholds:
-  review: 6
-  likely_spam: 13
-  high_confidence_spam: 21
+  review: 8
+  likely_spam: 16
+  high_confidence_spam: 26
 
 virtual_mailbox_keywords:
   - "The UPS Store"
@@ -119,7 +129,7 @@ weights:
   shared_phone: 4
   area_code_mismatch: 3
   invalid_phone: 2
-  no_website: 1
+  no_website: 4               # updated: high-risk industry with no website
   new_domain: 2
   shared_domain: 3
   generic_builder_site: 1
@@ -131,8 +141,28 @@ weights:
   cluster_detected: 3
   batch_submission: 3
   same_owner_multi_biz: 3
+  # Birdeye-specific rules
+  no_photos: 3
+  no_social: 2
+  year_established: 3
+  no_hours: 2
+  description_missing: 2
+  description_stuffed: 3
+  address_hidden: 4
+  service_area_no_address: 3
+  keyword_field_stuffed: 3
+  landing_page_domain_mismatch: 2
 
 # Disable individual rules by adding their key here
 disabled_rules: []
   # - high_risk_industry
   # - area_code_mismatch
+  # - no_photos
+  # - no_social
+  # - no_hours
+  # - year_established
+  # - description_quality
+  # - address_hidden
+  # - service_area_no_address
+  # - keyword_field_stuffed
+  # - landing_page_domain_mismatch
