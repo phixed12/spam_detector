@@ -1,0 +1,11 @@
+# Credentials — never commit the live config
+spam_config.yaml
+
+# Generated output files
+*_flagged.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python

@@ -17,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 import pgeocode
 import phonenumbers
+import requests
 import tldextract
 import yaml
 from rapidfuzz import fuzz
@@ -689,6 +690,22 @@ def rule_keyword_field_stuffed(row, col_map, cfg) -> list:
     return []
 
 
+def rule_residential_address(row, col_map, cfg, rdi_cache: dict) -> list:
+    if "residential_address" in cfg.get("disabled_rules", []):
+        return []
+    if not rdi_cache:
+        return []
+    address = get(row, col_map, "address")
+    if not address:
+        return []
+    rdi = rdi_cache.get(address)
+    if rdi == "Residential":
+        return [("RESIDENTIAL_ADDRESS",
+                 "Address classified as Residential by SmartyStreets (RDI check)",
+                 cfg["weights"]["residential_address"])]
+    return []
+
+
 def rule_landing_page_domain_mismatch(row, col_map, cfg) -> list:
     if "landing_page_domain_mismatch" in cfg.get("disabled_rules", []):
         return []
@@ -709,6 +726,66 @@ def rule_landing_page_domain_mismatch(row, col_map, cfg) -> list:
                  f"Landing page domain '{landing_domain}' differs from website domain '{website_domain}'",
                  cfg["weights"]["landing_page_domain_mismatch"])]
     return []
+
+
+def _fetch_rdi(street: str, city: str, state: str, zipcode: str,
+               auth_id: str, auth_token: str) -> str:
+    """Call SmartyStreets US Street Address API; return rdi value or '' on no match/error."""
+    params = {
+        "auth-id": auth_id,
+        "auth-token": auth_token,
+        "street": street,
+        "city": city,
+        "state": state,
+        "zipcode": zipcode,
+        "candidates": 1,
+    }
+    resp = requests.get(
+        "https://us-street.api.smartystreets.com/street-address",
+        params=params,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if data and isinstance(data, list):
+        return data[0].get("metadata", {}).get("rdi", "")
+    return ""
+
+
+def build_rdi_cache(df: pd.DataFrame, col_map: dict, cfg: dict) -> dict:
+    """
+    Pre-fetch RDI for every unique address belonging to a high-risk-industry row.
+    Returns an empty dict (silently skipping the rule) if credentials are absent.
+    """
+    auth_id = str(cfg.get("smartystreets_auth_id", "")).strip()
+    auth_token = str(cfg.get("smartystreets_auth_token", "")).strip()
+
+    if not auth_id or not auth_token:
+        print("[WARN] SmartyStreets credentials not configured — residential address check skipped.")
+        return {}
+
+    cache = {}
+    for _, row in df.iterrows():
+        if not _is_high_risk(row, col_map, cfg):
+            continue
+        address = get(row, col_map, "address")
+        if not address or address in cache:
+            continue
+        try:
+            rdi = _fetch_rdi(
+                address,
+                get(row, col_map, "city"),
+                get(row, col_map, "state"),
+                get(row, col_map, "zip"),
+                auth_id,
+                auth_token,
+            )
+            cache[address] = rdi
+        except Exception as exc:
+            print(f"[WARN] SmartyStreets API error for '{address}': {exc}")
+            cache[address] = ""
+
+    return cache
 
 
 def compute_risk_tier(score: int, thresholds: dict) -> str:
@@ -787,9 +864,10 @@ def process(df: pd.DataFrame, cfg: dict, verbose: bool = False) -> pd.DataFrame:
     shared_domain_counts  = build_shared_counts(df, col_map, "website", extract_domain)
     shared_email_counts   = build_shared_counts(
         df, col_map, "email", lambda x: x.lower().strip())
-    exact_hash_map    = build_exact_hash_map(df)
-    batch_counts      = build_batch_counts(df, col_map)
+    exact_hash_map     = build_exact_hash_map(df)
+    batch_counts       = build_batch_counts(df, col_map)
     owner_industry_map = build_owner_industry_map(df, col_map)
+    rdi_cache          = build_rdi_cache(df, col_map, cfg)
 
     name_col = col_map.get("business_name")
     norm_names = []
@@ -823,6 +901,7 @@ def process(df: pd.DataFrame, cfg: dict, verbose: bool = False) -> pd.DataFrame:
         all_flags += rule_description_quality(row, col_map, cfg)
         all_flags += rule_address_hidden(row, col_map, cfg)
         all_flags += rule_service_area_no_address(row, col_map, cfg)
+        all_flags += rule_residential_address(row, col_map, cfg, rdi_cache)
         all_flags += rule_keyword_field_stuffed(row, col_map, cfg)
         all_flags += rule_landing_page_domain_mismatch(row, col_map, cfg)
 
