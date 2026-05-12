@@ -64,7 +64,7 @@ def read_upload(uploaded) -> pd.DataFrame:
     raise ValueError(f"Unsupported file type: {uploaded.name}")
 
 
-def style_by_tier(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+def style_by_tier(df: pd.DataFrame):
     def row_style(row):
         color = TIER_BG.get(row.get("risk_tier", ""), "")
         return [f"background-color: {color}; color: #111" if color else ""] * len(row)
