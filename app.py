@@ -162,6 +162,23 @@ with st.sidebar:
             height=80,
         )
 
+    with st.expander("SmartyStreets API"):
+        st.caption("Required for residential address (RDI) checks. Leave blank to skip.")
+        smarty_auth_id = st.text_input(
+            "Auth ID",
+            value=str(cfg.get("smartystreets_auth_id", "") or ""),
+            type="password",
+        )
+        smarty_auth_token = st.text_input(
+            "Auth Token",
+            value=str(cfg.get("smartystreets_auth_token", "") or ""),
+            type="password",
+        )
+        if smarty_auth_id and smarty_auth_token:
+            st.success("RDI check active", icon="✅")
+        else:
+            st.warning("Credentials not set — RDI check will be skipped", icon="⚠️")
+
     st.divider()
     st.caption(f"Config file: `{CONFIG_PATH.name}`")
 
@@ -181,6 +198,8 @@ live_cfg["high_risk_industries"] = [
 live_cfg["disabled_rules"] = [
     l.strip() for l in disabled_text.splitlines() if l.strip()
 ]
+live_cfg["smartystreets_auth_id"] = smarty_auth_id.strip()
+live_cfg["smartystreets_auth_token"] = smarty_auth_token.strip()
 
 # ---------------------------------------------------------------------------
 # Main area
@@ -218,10 +237,17 @@ if not run and "result_df" not in st.session_state:
 
 # Run detection (or reuse cached result for this upload)
 file_key = (uploaded.name, uploaded.size, hcs_thresh, likely_thresh, review_thresh,
-            shared_addr, shared_phone, batch_thresh)
+            shared_addr, shared_phone, batch_thresh,
+            bool(smarty_auth_id), bool(smarty_auth_token))
 
 if run or st.session_state.get("file_key") != file_key:
-    with st.spinner("Running detection rules… this may take a moment for large files."):
+    rdi_active = bool(smarty_auth_id and smarty_auth_token)
+    spinner_msg = (
+        "Running detection rules + SmartyStreets RDI checks… (external API calls in progress)"
+        if rdi_active else
+        "Running detection rules… this may take a moment for large files."
+    )
+    with st.spinner(spinner_msg):
         try:
             result_df = process(raw_df.copy(), live_cfg, verbose=False)
         except Exception as e:
@@ -288,10 +314,11 @@ with flag_col:
 with st.expander("Cluster details"):
     cluster_info = []
     for flag_key, label in [
-        ("SHARED_PHONE",   "Shared phone"),
-        ("SHARED_ADDRESS", "Shared address"),
-        ("SHARED_EMAIL",   "Shared email"),
-        ("SHARED_DOMAIN",  "Shared domain"),
+        ("SHARED_PHONE",        "Shared phone"),
+        ("SHARED_ADDRESS",      "Shared address"),
+        ("SHARED_EMAIL",        "Shared email"),
+        ("SHARED_DOMAIN",       "Shared domain"),
+        ("RESIDENTIAL_ADDRESS", "Residential address (RDI)"),
     ]:
         flagged = out_df[out_df["flags_triggered"].str.contains(flag_key, na=False)]
         cluster_info.append({"Signal": label, "Records flagged": len(flagged)})
@@ -313,6 +340,41 @@ with st.expander("Cluster details"):
         )
         breakdown["avg_score"] = breakdown["avg_score"].round(1)
         st.dataframe(breakdown, use_container_width=True, hide_index=True)
+
+# Residential address hits — only rendered when any rows were flagged
+_rdi_flagged = out_df[out_df["flags_triggered"].str.contains("RESIDENTIAL_ADDRESS", na=False)]
+if not _rdi_flagged.empty:
+    with st.expander(f"🏠 Residential address hits ({len(_rdi_flagged)} records)", expanded=True):
+        if not (smarty_auth_id and smarty_auth_token):
+            st.info(
+                "These results are from a previous run with credentials set. "
+                "Add SmartyStreets credentials in the sidebar to run fresh RDI checks.",
+                icon="ℹ️",
+            )
+        # Show the most useful columns for reviewing residential hits
+        addr_col = next((c for c in out_df.columns if c.lower() in
+                         ("address", "street", "street_address")), None)
+        name_col = next((c for c in out_df.columns if c.lower() in
+                         ("business_name", "name", "company")), None)
+        city_col  = next((c for c in out_df.columns if c.lower() == "city"), None)
+        state_col = next((c for c in out_df.columns if c.lower() == "state"), None)
+
+        show_cols = [c for c in [name_col, addr_col, city_col, state_col,
+                                  "spam_score", "risk_tier", "flags_triggered"] if c]
+        rdi_display = _rdi_flagged[show_cols].copy()
+        rdi_display["spam_score"] = pd.to_numeric(rdi_display["spam_score"], errors="coerce")
+        st.dataframe(
+            style_by_tier(rdi_display),
+            use_container_width=True,
+            column_config={
+                "spam_score":      st.column_config.NumberColumn("Score", format="%d"),
+                "risk_tier":       st.column_config.TextColumn("Risk Tier"),
+                "flags_triggered": st.column_config.TextColumn("Flags", width="large"),
+            },
+            hide_index=True,
+        )
+elif smarty_auth_id and smarty_auth_token:
+    st.success("No residential addresses detected by SmartyStreets RDI check.", icon="🏠")
 
 # ---------------------------------------------------------------------------
 # Results table
