@@ -15,11 +15,13 @@ from datetime import date
 from pathlib import Path
 from typing import NamedTuple
 
+import asyncio
+
+import aiohttp
 import numpy as np
 import pandas as pd
 import pgeocode
 import phonenumbers
-import requests
 import tldextract
 import yaml
 from rapidfuzz import fuzz  # kept for any future scalar use; cdist removed
@@ -252,27 +254,70 @@ def _count_col(df: pd.DataFrame, col_map: dict, canonical: str,
 
 
 # ---------------------------------------------------------------------------
-# SmartyStreets RDI helpers (HTTP — must remain serial; optimised to unique addrs)
+# SmartyStreets RDI helpers — concurrent async fetching, module-level cache
 # ---------------------------------------------------------------------------
 
-def _fetch_rdi(street: str, city: str, state: str, zipcode: str,
-               auth_id: str, auth_token: str) -> str:
-    resp = requests.get(
-        "https://us-street.api.smartystreets.com/street-address",
-        params={"auth-id": auth_id, "auth-token": auth_token,
-                "street": street, "city": city, "state": state,
-                "zipcode": zipcode, "candidates": 1},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    if data and isinstance(data, list):
-        return data[0].get("metadata", {}).get("rdi", "")
-    return ""
+_SMARTY_URL = "https://us-street.api.smartystreets.com/street-address"
+
+# Persists across build_rdi_cache calls within the same process.
+# Guarantees no address is ever looked up twice, even across different uploads.
+_RDI_CACHE: dict = {}
+
+
+async def _fetch_one_rdi(
+    session: aiohttp.ClientSession,
+    semaphore: asyncio.Semaphore,
+    address: str, city: str, state: str, zipcode: str,
+    auth_id: str, auth_token: str,
+) -> str:
+    """Single async SmartyStreets RDI lookup, rate-limited by semaphore."""
+    async with semaphore:
+        async with session.get(
+            _SMARTY_URL,
+            params={"auth-id": auth_id, "auth-token": auth_token,
+                    "street": address, "city": city, "state": state,
+                    "zipcode": zipcode, "candidates": 1},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+            if data and isinstance(data, list):
+                return data[0].get("metadata", {}).get("rdi", "")
+            return ""
+
+
+async def _fetch_rdi_concurrent(
+    lookups: list,
+    auth_id: str,
+    auth_token: str,
+    max_concurrent: int,
+) -> dict:
+    """
+    Fire all RDI lookups concurrently (capped at max_concurrent in-flight).
+    Returns {address: rdi_value_or_exception}.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+    async with aiohttp.ClientSession() as session:
+        tasks = {
+            address: _fetch_one_rdi(
+                session, semaphore, address, city, state, zipcode, auth_id, auth_token,
+            )
+            for address, city, state, zipcode in lookups
+        }
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+    return dict(zip(tasks.keys(), results))
 
 
 def build_rdi_cache(df: pd.DataFrame, col_map: dict, cfg: dict) -> dict:
-    """Pre-fetch RDI for every *unique address* in a high-risk row."""
+    """
+    Populate and return the per-process RDI address cache.
+
+    - Only addresses not already in _RDI_CACHE are fetched.
+    - All new fetches run concurrently via aiohttp / asyncio.gather.
+    - Returns a dict covering every high-risk address in this DataFrame.
+    """
+    global _RDI_CACHE
+
     auth_id    = (str(cfg.get("smartystreets_auth_id", "")).strip()
                   or os.environ.get("SMARTYSTREETS_AUTH_ID", "").strip())
     auth_token = (str(cfg.get("smartystreets_auth_token", "")).strip()
@@ -281,33 +326,54 @@ def build_rdi_cache(df: pd.DataFrame, col_map: dict, cfg: dict) -> dict:
         print("[WARN] SmartyStreets credentials not configured — residential address check skipped.")
         return {}
 
-    addr_col  = col_map.get("address")
-    city_col  = col_map.get("city")
-    state_col = col_map.get("state")
-    zip_col   = col_map.get("zip")
+    addr_col = col_map.get("address")
     if not addr_col:
         return {}
 
-    hr_mask  = _is_high_risk(df, col_map, cfg)
-    hr_df    = df[hr_mask]
-    addrs    = hr_df[addr_col].fillna("").astype(str).str.strip()
+    city_col  = col_map.get("city")
+    state_col = col_map.get("state")
+    zip_col   = col_map.get("zip")
+
+    hr_mask      = _is_high_risk(df, col_map, cfg)
+    hr_df        = df[hr_mask]
+    addrs        = hr_df[addr_col].fillna("").astype(str).str.strip()
     unique_addrs = addrs[addrs != ""].unique()
 
-    cache = {}
-    for address in unique_addrs:
-        first = hr_df[addrs == address].iloc[0]
-        try:
-            cache[address] = _fetch_rdi(
+    # Skip addresses already cached — never call the API twice for the same address
+    to_fetch = [a for a in unique_addrs if a not in _RDI_CACHE]
+
+    if to_fetch:
+        lookups = []
+        for address in to_fetch:
+            first = hr_df[addrs == address].iloc[0]
+            lookups.append((
                 address,
                 str(first[city_col]).strip()  if city_col  else "",
                 str(first[state_col]).strip() if state_col else "",
                 str(first[zip_col]).strip()   if zip_col   else "",
-                auth_id, auth_token,
-            )
-        except Exception as exc:
-            print(f"[WARN] SmartyStreets API error for '{address}': {exc}")
-            cache[address] = ""
-    return cache
+            ))
+
+        max_concurrent = int(cfg.get("smartystreets_max_concurrent", 10))
+        coro = _fetch_rdi_concurrent(lookups, auth_id, auth_token, max_concurrent)
+
+        # asyncio.run() creates a fresh event loop; if one is already running
+        # (e.g. inside Jupyter), fall back to a dedicated thread.
+        try:
+            asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                raw = pool.submit(asyncio.run, coro).result()
+        except RuntimeError:
+            raw = asyncio.run(coro)
+
+        for address, result in raw.items():
+            if isinstance(result, Exception):
+                print(f"[WARN] SmartyStreets API error for '{address}': {result}")
+                _RDI_CACHE[address] = ""
+            else:
+                _RDI_CACHE[address] = result
+
+    return {addr: _RDI_CACHE[addr] for addr in unique_addrs if addr in _RDI_CACHE}
 
 
 # ---------------------------------------------------------------------------

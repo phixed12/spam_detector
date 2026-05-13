@@ -3,6 +3,7 @@
 
 smartystreets_auth_id: ""
 smartystreets_auth_token: ""
+smartystreets_max_concurrent: 10
 
 high_risk_industries:
   - locksmith
