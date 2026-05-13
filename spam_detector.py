@@ -22,7 +22,7 @@ import phonenumbers
 import requests
 import tldextract
 import yaml
-from rapidfuzz import fuzz, process as rf_process
+from rapidfuzz import fuzz  # kept for any future scalar use; cdist removed
 
 # ---------------------------------------------------------------------------
 # Column name aliases — map flexible input headers to canonical names.
@@ -626,30 +626,85 @@ def rule_exact_duplicate(df, col_map, cfg) -> list:
     return [RuleResult("EXACT_DUPLICATE", cfg["weights"]["exact_duplicate_row"], mask, detail)]
 
 
+def _name_blocking_fingerprints(names: pd.Series) -> list:
+    """
+    Three blocking fingerprints for groupby-based near-duplicate detection.
+    Names sharing any fingerprint are near-duplicate candidates.
+
+    FP1 sorted-token set  — "Quick Dallas Tow" == "Dallas Tow Quick"
+    FP2 sorted char-trigrams (first 8) — "Locksmith" ≈ "Locksmiths"
+    FP3 length-bucket + 5-char prefix  — "Smith Plumbing" ≈ "Smith Plumbers"
+    """
+    fp_tokens = (
+        names.str.split()
+             .apply(lambda t: " ".join(sorted(set(t)))
+                    if isinstance(t, list) and t else "")
+    )
+
+    def _tg(s):
+        if not s or len(s) < 3:
+            return s
+        return "|".join(sorted(set(s[i:i+3] for i in range(len(s) - 2)))[:8])
+    fp_trigrams = names.apply(_tg)
+
+    fp_prefix = (names.str.len() // 3).astype(str) + ":" + names.str[:5]
+
+    return [fp_tokens, fp_trigrams, fp_prefix]
+
+
 def rule_near_duplicate_name(df, col_map, cfg, norm_names: list) -> list:
+    """
+    Near-duplicate name detection via multi-key fingerprint groupby.
+    O(n log n) — no pairwise comparison.
+    """
     if "near_duplicate_name" in cfg.get("disabled_rules", []):
         return []
-    if sum(bool(n) for n in norm_names) < 2:
+
+    names    = pd.Series(norm_names, index=df.index)
+    has_name = names != ""
+    if has_name.sum() < 2:
         return []
 
-    # rapidfuzz cdist computes the full pairwise similarity matrix in one C call
-    scores = rf_process.cdist(norm_names, norm_names, scorer=fuzz.ratio, score_cutoff=90)
-    np.fill_diagonal(scores, 0)
+    fps      = _name_blocking_fingerprints(names)
+    mask     = pd.Series(False, index=df.index)
+    detail   = pd.Series("", index=df.index)
+    own_idx  = pd.Series(df.index, index=df.index)
+    SENTINEL = "\x00"
 
-    nonempty    = np.array([bool(n) for n in norm_names])
-    has_near_dup = nonempty & (scores > 0).any(axis=1)
-    mask = pd.Series(has_near_dup, index=df.index)
+    for fp in fps:
+        # Mask rows with a valid fingerprint that occurs more than once
+        keyed  = fp.where(has_name & (fp != ""), other=SENTINEL)
+        counts = keyed.groupby(keyed).transform("count")
+        is_dup = (keyed != SENTINEL) & (counts > 1)
 
-    # Detail: find first near-dup per flagged row
-    detail = pd.Series("", index=df.index)
-    for pos in np.where(has_near_dup)[0]:
-        dup_cols = np.where(scores[pos] > 0)[0]
-        if len(dup_cols) == 0:
+        new = is_dup & ~mask          # rows not yet described by a previous fp
+        if not new.any():
             continue
-        j     = int(dup_cols[0])
-        score = int(scores[pos, j])
-        detail.iat[pos] = (f"Name is ~{score}% similar to row "
-                           f"{df.index[j]}: '{norm_names[j]}'")
+
+        first_in_grp = (keyed.where(is_dup)
+                             .groupby(keyed.where(is_dup))
+                             .transform("idxmin"))
+
+        # Non-first members: reference the first row in their group
+        not_first = new & (first_in_grp != own_idx)
+        if not_first.any():
+            first_ref  = first_in_grp[not_first]               # src_idx → other_idx
+            other_names = names.loc[first_ref.values].values    # lookup names at other_idx
+            detail[not_first] = (
+                "Near-duplicate name with row " + first_ref.astype(str)
+                + ": '" + pd.Series(other_names, index=first_ref.index) + "'"
+            )
+
+        # First members: note how many others share their fingerprint
+        is_first = new & (first_in_grp == own_idx)
+        if is_first.any():
+            n_others = (counts[is_first] - 1).astype(str)
+            detail[is_first] = (
+                "Near-duplicate name; shares fingerprint with "
+                + n_others + " other row(s) in this batch"
+            )
+
+        mask |= is_dup
 
     return [RuleResult("NEAR_DUPLICATE_NAME", cfg["weights"]["near_duplicate_name"],
                        mask, detail)]
