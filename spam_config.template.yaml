@@ -36,9 +36,9 @@ shared_phone_threshold: 2
 batch_submission_threshold: 5
 
 score_thresholds:
-  review: 8
-  likely_spam: 16
-  high_confidence_spam: 26
+  review: 10
+  likely_spam: 11
+  high_confidence_spam: 25
 
 virtual_mailbox_keywords:
   - "The UPS Store"
