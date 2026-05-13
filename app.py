@@ -181,13 +181,6 @@ with st.sidebar:
             height=180,
         )
 
-    with st.expander("Disabled rules"):
-        disabled_text = st.text_area(
-            "Rule keys to skip (one per line)",
-            value="\n".join(cfg.get("disabled_rules", [])),
-            height=80,
-        )
-
     with st.expander("Rule weights"):
         st.caption("Each weight adds to a row's spam score when that rule fires (0 = disabled).")
         w = cfg["weights"]
@@ -315,9 +308,7 @@ live_cfg["batch_submission_threshold"] = int(batch_thresh)
 live_cfg["high_risk_industries"] = [
     l.strip() for l in industries_text.splitlines() if l.strip()
 ]
-live_cfg["disabled_rules"] = [
-    l.strip() for l in disabled_text.splitlines() if l.strip()
-]
+live_cfg["disabled_rules"] = cfg.get("disabled_rules", [])
 live_cfg["smartystreets_auth_id"] = smarty_auth_id.strip()
 live_cfg["smartystreets_auth_token"] = smarty_auth_token.strip()
 live_cfg["weights"] = {
