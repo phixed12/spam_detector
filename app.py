@@ -2,7 +2,9 @@
 Spam Business Detector — Streamlit UI
 """
 
+import hashlib
 import io
+import json
 import os
 import sys
 from collections import Counter
@@ -64,15 +66,18 @@ def read_upload(uploaded) -> pd.DataFrame:
     raise ValueError(f"Unsupported file type: {uploaded.name}")
 
 
-@st.cache_data(show_spinner=False)
-def _run_detection(file_bytes: bytes, file_name: str, cfg: dict) -> pd.DataFrame:
-    """
-    Run the full detection pipeline.
+def _detection_cache_key(file_bytes: bytes, cfg: dict) -> str:
+    """SHA-256 of file bytes + stable JSON-serialised config. Used as session_state key."""
+    cfg_bytes = json.dumps(cfg, sort_keys=True, default=str).encode()
+    return hashlib.sha256(file_bytes + cfg_bytes).hexdigest()
 
-    Cached by (file_bytes, file_name, cfg) so it only recomputes when the
-    uploaded file or the active config actually changes.  Display-only
-    interactions — filter dropdowns, search box, table sorting, expanders —
-    do not alter these arguments and therefore always hit the cache.
+
+def _run_detection(file_bytes: bytes, file_name: str, cfg: dict,
+                   on_progress=None) -> pd.DataFrame:
+    """
+    Parse the uploaded file and run the full detection pipeline.
+    on_progress(fraction, message) is called at each processing step so
+    the caller can drive a progress bar.
     """
     buf  = io.BytesIO(file_bytes)
     name = file_name.lower()
@@ -82,7 +87,7 @@ def _run_detection(file_bytes: bytes, file_name: str, cfg: dict) -> pd.DataFrame
         raw = pd.read_excel(buf, dtype=str, keep_default_na=False)
     else:
         raise ValueError(f"Unsupported file type: {file_name}")
-    return process(raw, cfg, verbose=False)
+    return process(raw, cfg, verbose=False, on_progress=on_progress)
 
 
 def style_by_tier(df: pd.DataFrame):
@@ -386,23 +391,30 @@ with st.expander("Preview raw input (first 5 rows)"):
 run = st.button("🚀 Run Spam Detector", type="primary", use_container_width=True)
 if run:
     st.session_state["show_results"] = True
+    st.session_state.pop("_det_key", None)   # force re-run on explicit click
 
 if not st.session_state.get("show_results"):
     st.stop()
 
-rdi_active  = bool(smarty_auth_id and smarty_auth_token)
-spinner_msg = (
-    "Running detection rules + SmartyStreets RDI checks… (external API calls in progress)"
-    if rdi_active else
-    "Running detection rules… this may take a moment for large files."
-)
-with st.spinner(spinner_msg):
+_key = _detection_cache_key(uploaded.getvalue(), live_cfg)
+
+if st.session_state.get("_det_key") != _key:
+    _prog = st.progress(0, text="Starting…")
     try:
-        out_df = _run_detection(uploaded.getvalue(), uploaded.name, live_cfg)
+        out_df = _run_detection(
+            uploaded.getvalue(), uploaded.name, live_cfg,
+            on_progress=lambda f, m: _prog.progress(min(f, 1.0), text=m),
+        )
     except Exception as e:
+        _prog.empty()
         st.error(f"Detection failed: {e}")
         st.exception(e)
         st.stop()
+    st.session_state["_det_key"]    = _key
+    st.session_state["_det_result"] = out_df
+    _prog.empty()
+else:
+    out_df = st.session_state["_det_result"]
 
 # ---------------------------------------------------------------------------
 # Summary metrics
