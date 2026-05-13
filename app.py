@@ -13,8 +13,6 @@ import streamlit as st
 
 # Make spam_detector importable from the same directory
 sys.path.insert(0, str(Path(__file__).parent))
-import os
-
 from spam_detector import find_config, load_config, process
 
 # ---------------------------------------------------------------------------
@@ -64,6 +62,27 @@ def read_upload(uploaded) -> pd.DataFrame:
     elif name.endswith((".xlsx", ".xls")):
         return pd.read_excel(uploaded, dtype=str, keep_default_na=False)
     raise ValueError(f"Unsupported file type: {uploaded.name}")
+
+
+@st.cache_data(show_spinner=False)
+def _run_detection(file_bytes: bytes, file_name: str, cfg: dict) -> pd.DataFrame:
+    """
+    Run the full detection pipeline.
+
+    Cached by (file_bytes, file_name, cfg) so it only recomputes when the
+    uploaded file or the active config actually changes.  Display-only
+    interactions — filter dropdowns, search box, table sorting, expanders —
+    do not alter these arguments and therefore always hit the cache.
+    """
+    buf  = io.BytesIO(file_bytes)
+    name = file_name.lower()
+    if name.endswith(".csv"):
+        raw = pd.read_csv(buf, dtype=str, keep_default_na=False)
+    elif name.endswith((".xlsx", ".xls")):
+        raw = pd.read_excel(buf, dtype=str, keep_default_na=False)
+    else:
+        raise ValueError(f"Unsupported file type: {file_name}")
+    return process(raw, cfg, verbose=False)
 
 
 def style_by_tier(df: pd.DataFrame):
@@ -365,34 +384,25 @@ with st.expander("Preview raw input (first 5 rows)"):
     st.dataframe(raw_df.head(), use_container_width=True)
 
 run = st.button("🚀 Run Spam Detector", type="primary", use_container_width=True)
+if run:
+    st.session_state["show_results"] = True
 
-if not run and "result_df" not in st.session_state:
+if not st.session_state.get("show_results"):
     st.stop()
 
-# Run detection (or reuse cached result for this upload)
-file_key = (uploaded.name, uploaded.size, hcs_thresh, likely_thresh, review_thresh,
-            shared_addr, shared_phone, batch_thresh,
-            bool(smarty_auth_id), bool(smarty_auth_token),
-            tuple(sorted(live_cfg["weights"].items())))
-
-if run or st.session_state.get("file_key") != file_key:
-    rdi_active = bool(smarty_auth_id and smarty_auth_token)
-    spinner_msg = (
-        "Running detection rules + SmartyStreets RDI checks… (external API calls in progress)"
-        if rdi_active else
-        "Running detection rules… this may take a moment for large files."
-    )
-    with st.spinner(spinner_msg):
-        try:
-            result_df = process(raw_df.copy(), live_cfg, verbose=False)
-        except Exception as e:
-            st.error(f"Detection failed: {e}")
-            st.exception(e)
-            st.stop()
-    st.session_state["result_df"] = result_df
-    st.session_state["file_key"] = file_key
-
-out_df = st.session_state["result_df"]
+rdi_active  = bool(smarty_auth_id and smarty_auth_token)
+spinner_msg = (
+    "Running detection rules + SmartyStreets RDI checks… (external API calls in progress)"
+    if rdi_active else
+    "Running detection rules… this may take a moment for large files."
+)
+with st.spinner(spinner_msg):
+    try:
+        out_df = _run_detection(uploaded.getvalue(), uploaded.name, live_cfg)
+    except Exception as e:
+        st.error(f"Detection failed: {e}")
+        st.exception(e)
+        st.stop()
 
 # ---------------------------------------------------------------------------
 # Summary metrics
