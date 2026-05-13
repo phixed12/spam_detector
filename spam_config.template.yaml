@@ -133,7 +133,7 @@ weights:
   shared_phone: 4
   area_code_mismatch: 3
   invalid_phone: 2
-  no_website: 4               # updated: high-risk industry with no website
+  no_website: 3
   new_domain: 2
   shared_domain: 3
   generic_builder_site: 1
