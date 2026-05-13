@@ -1,5 +1,6 @@
-# Credentials — never commit the live config
-spam_config.yaml
+# spam_config.yaml is committed with blank credentials.
+# Set SMARTYSTREETS_AUTH_ID and SMARTYSTREETS_AUTH_TOKEN as environment
+# variables (e.g. Streamlit Cloud secrets) — do not put real credentials in this file.
 
 # Generated output files
 *_flagged.xlsx
