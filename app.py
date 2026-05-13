@@ -166,21 +166,6 @@ with st.sidebar:
         hcs_thresh = st.number_input(
             "High Confidence Spam threshold", value=cfg["score_thresholds"]["high_confidence_spam"], min_value=1, step=1)
 
-    with st.expander("Shared-field thresholds"):
-        shared_addr = st.number_input(
-            "Shared address (flag if ≥ N)", value=cfg["shared_address_threshold"], min_value=2, step=1)
-        shared_phone = st.number_input(
-            "Shared phone (flag if ≥ N)", value=cfg["shared_phone_threshold"], min_value=2, step=1)
-        batch_thresh = st.number_input(
-            "Batch submission (flag if ≥ N/day)", value=cfg["batch_submission_threshold"], min_value=2, step=1)
-
-    with st.expander("High-risk industries"):
-        industries_text = st.text_area(
-            "One per line",
-            value="\n".join(cfg["high_risk_industries"]),
-            height=180,
-        )
-
     with st.expander("Rule weights"):
         st.caption("Each weight adds to a row's spam score when that rule fires (0 = disabled).")
         w = cfg["weights"]
@@ -261,6 +246,21 @@ with st.sidebar:
         wc1, wc2 = st.columns(2)
         with wc1:
             w_keyword_field_stuffed  = _w("keyword_field_stuffed",  "Keywords field stuffed")
+
+    with st.expander("High-risk industries"):
+        industries_text = st.text_area(
+            "One per line",
+            value="\n".join(cfg["high_risk_industries"]),
+            height=180,
+        )
+
+    with st.expander("Shared-field thresholds"):
+        shared_addr = st.number_input(
+            "Shared address (flag if ≥ N)", value=cfg["shared_address_threshold"], min_value=2, step=1)
+        shared_phone = st.number_input(
+            "Shared phone (flag if ≥ N)", value=cfg["shared_phone_threshold"], min_value=2, step=1)
+        batch_thresh = st.number_input(
+            "Batch submission (flag if ≥ N/day)", value=cfg["batch_submission_threshold"], min_value=2, step=1)
 
     with st.expander("SmartyStreets API"):
         st.caption("Required for residential address (RDI) checks. Leave blank to skip.")
