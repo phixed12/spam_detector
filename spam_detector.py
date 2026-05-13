@@ -1026,7 +1026,7 @@ def rule_residential_address(df, col_map, cfg, rdi_cache: dict) -> list:
         return []
     address = _col(df, col_map, "address")
     rdi     = address.map(rdi_cache).fillna("")
-    mask    = rdi == "Residential"
+    mask    = (rdi == "Residential") & _is_high_risk(df, col_map, cfg)
     detail  = pd.Series("Address classified as Residential by SmartyStreets (RDI check)",
                         index=df.index).where(mask, "")
     return [RuleResult("RESIDENTIAL_ADDRESS", cfg["weights"]["residential_address"],
