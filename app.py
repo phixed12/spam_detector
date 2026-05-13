@@ -13,13 +13,15 @@ import streamlit as st
 
 # Make spam_detector importable from the same directory
 sys.path.insert(0, str(Path(__file__).parent))
-from spam_detector import load_config, process
+import os
+
+from spam_detector import find_config, load_config, process
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-CONFIG_PATH = Path(__file__).parent / "spam_config.yaml"
+CONFIG_PATH = Path(find_config(str(Path(__file__).parent / "spam_config.yaml")))
 
 TIER_ORDER = ["High Confidence Spam", "Likely Spam", "Review", "Clean"]
 
@@ -245,23 +247,36 @@ with st.sidebar:
 
     with st.expander("SmartyStreets API"):
         st.caption("Required for residential address (RDI) checks. Leave blank to skip.")
+        _cfg_id    = str(cfg.get("smartystreets_auth_id", "") or "").strip()
+        _cfg_token = str(cfg.get("smartystreets_auth_token", "") or "").strip()
+        _env_id    = os.environ.get("SMARTYSTREETS_AUTH_ID", "").strip()
+        _env_token = os.environ.get("SMARTYSTREETS_AUTH_TOKEN", "").strip()
+        _default_id    = _cfg_id    or _env_id
+        _default_token = _cfg_token or _env_token
         smarty_auth_id = st.text_input(
             "Auth ID",
-            value=str(cfg.get("smartystreets_auth_id", "") or ""),
+            value=_default_id,
             type="password",
         )
         smarty_auth_token = st.text_input(
             "Auth Token",
-            value=str(cfg.get("smartystreets_auth_token", "") or ""),
+            value=_default_token,
             type="password",
         )
         if smarty_auth_id and smarty_auth_token:
-            st.success("RDI check active", icon="✅")
+            _src = "config" if (_cfg_id and _cfg_token) else "env vars"
+            st.success(f"RDI check active (credentials from {_src})", icon="✅")
         else:
-            st.warning("Credentials not set — RDI check will be skipped", icon="⚠️")
+            if _env_id or _env_token:
+                st.warning("Partial credentials in env vars — both ID and token required", icon="⚠️")
+            else:
+                st.warning("Credentials not set — RDI check will be skipped", icon="⚠️")
 
     st.divider()
-    st.caption(f"Config file: `{CONFIG_PATH.name}`")
+    _cfg_label = CONFIG_PATH.name
+    if CONFIG_PATH.name == "spam_config.template.yaml":
+        _cfg_label += " ⚠️ (fallback)"
+    st.caption(f"Config file: `{_cfg_label}`")
 
 # Build live config from sidebar inputs
 live_cfg = dict(cfg)

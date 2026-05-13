@@ -157,6 +157,20 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def find_config(path: str) -> str:
+    """Return path if it exists; fall back to spam_config.template.yaml in the same directory."""
+    if os.path.exists(path):
+        return path
+    template = str(Path(path).parent / "spam_config.template.yaml")
+    if os.path.exists(template):
+        print(f"[WARN] '{path}' not found — falling back to '{Path(template).name}'")
+        return template
+    raise FileNotFoundError(
+        f"Config not found: '{path}'. "
+        f"Copy spam_config.template.yaml to spam_config.yaml to get started."
+    )
+
+
 def normalize_text(s) -> str:
     if not isinstance(s, str):
         return ""
@@ -757,8 +771,10 @@ def build_rdi_cache(df: pd.DataFrame, col_map: dict, cfg: dict) -> dict:
     Pre-fetch RDI for every unique address belonging to a high-risk-industry row.
     Returns an empty dict (silently skipping the rule) if credentials are absent.
     """
-    auth_id = str(cfg.get("smartystreets_auth_id", "")).strip()
-    auth_token = str(cfg.get("smartystreets_auth_token", "")).strip()
+    auth_id = (str(cfg.get("smartystreets_auth_id", "")).strip()
+               or os.environ.get("SMARTYSTREETS_AUTH_ID", "").strip())
+    auth_token = (str(cfg.get("smartystreets_auth_token", "")).strip()
+                  or os.environ.get("SMARTYSTREETS_AUTH_TOKEN", "").strip())
 
     if not auth_id or not auth_token:
         print("[WARN] SmartyStreets credentials not configured — residential address check skipped.")
@@ -1007,12 +1023,11 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
-    for p, label in [(args.input, "Input"), (args.config, "Config")]:
-        if not os.path.exists(p):
-            print(f"[ERROR] {label} file not found: {p}", file=sys.stderr)
-            sys.exit(1)
+    if not os.path.exists(args.input):
+        print(f"[ERROR] Input file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
 
-    cfg = load_config(args.config)
+    cfg = load_config(find_config(args.config))
     df = load_input(args.input)
     print(f"[INFO] {len(df)} records loaded, {len(df.columns)} columns")
 
