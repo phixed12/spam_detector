@@ -15,6 +15,15 @@ high_risk_industries:
   - air conditioning
   - heating
   - garage door
+  - garage door supplier
+  - chimney sweep
+  - air duct cleaning
+  - repair service
+  - hvac contractor
+  - paving contractor
+  - general contractor
+  - air conditioner repair service
+  - carpet cleaning service
   - pest control
   - exterminator
   - electrician
@@ -36,9 +45,9 @@ shared_phone_threshold: 2
 batch_submission_threshold: 5
 
 score_thresholds:
-  review: 10
-  likely_spam: 11
-  high_confidence_spam: 25
+  review: 7
+  likely_spam: 9
+  high_confidence_spam: 15
 
 virtual_mailbox_keywords:
   - "The UPS Store"
